@@ -112,7 +112,8 @@ class BaseAPIViewSet(GenericViewSet):
                     self.__class__.__name__
                 )
             )
-
+        if "site" in request.GET:
+            return redirect(url + "?site=" + request.GET["site"])
         return redirect(url)
 
     def find_object(self, queryset, request):
@@ -422,7 +423,8 @@ class PagesAPIViewSet(BaseAPIViewSet):
         OrderingFilter,
         TranslationOfFilter,
         LocaleFilter,
-        SearchFilter,  # needs to be last, as SearchResults querysets cannot be filtered further
+        SearchFilter,
+        # needs to be last, as SearchResults querysets cannot be filtered further
     ]
     known_query_parameters = BaseAPIViewSet.known_query_parameters.union(
         [
@@ -555,20 +557,24 @@ class PagesAPIViewSet(BaseAPIViewSet):
 
         # Allow pages to be filtered to a specific type
         try:
-            models = page_models_from_string(
-                request.GET.get("type", "wagtailcore.Page")
-            )
+            models_type = request.GET.get("type", None)
+            models = models_type and page_models_from_string(models_type) or []
         except (LookupError, ValueError):
             raise BadRequestError("type doesn't exist")
 
         if not models:
-            return self.get_base_queryset()
+            if self.model == Page:
+                return self.get_base_queryset()
+            else:
+                return self.model.objects.filter(
+                    pk__in=self.get_base_queryset().values_list("pk", flat=True)
+                )
 
         elif len(models) == 1:
             # If a single page type has been specified, swap out the Page-based queryset for one based on
             # the specific page model so that we can filter on any custom APIFields defined on that model
             return models[0].objects.filter(
-                id__in=self.get_base_queryset().values_list("id", flat=True)
+                pk__in=self.get_base_queryset().values_list("pk", flat=True)
             )
 
         else:  # len(models) > 1
@@ -579,7 +585,29 @@ class PagesAPIViewSet(BaseAPIViewSet):
         return base.specific
 
     def find_object(self, queryset, request):
-        site = Site.find_for_request(request)
+        # site = Site.find_for_request(request)
+        # site = Site.find_for_request(request)
+        if "site" in request.GET:
+            # Optionally allow querying by port
+            if ":" in request.GET["site"]:
+                (hostname, port) = request.GET["site"].split(":", 1)
+                query = {
+                    "hostname": hostname,
+                    "port": port,
+                }
+            else:
+                query = {
+                    "hostname": request.GET["site"],
+                }
+            try:
+                site = Site.objects.get(**query)
+            except Site.MultipleObjectsReturned:
+                raise BadRequestError(
+                    "Your query returned multiple sites. Try adding a port number to your site filter."
+                )
+        else:
+            # Otherwise, find the site from the request
+            site = Site.find_for_request(self.request)
         if "html_path" in request.GET and site is not None:
             path = request.GET["html_path"]
             path_components = [component for component in path.split("/") if component]
